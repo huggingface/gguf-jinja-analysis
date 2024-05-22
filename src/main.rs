@@ -4,6 +4,7 @@ use anyhow::anyhow;
 use bytes::{BufMut, BytesMut};
 use futures::stream::FuturesUnordered;
 use gguf::{GGUFHeader, GGUFMetadata, GGUFMetadataValue};
+use indicatif::ProgressBar;
 use pyo3::{
     types::{PyAnyMethods, PyTypeMethods},
     PyResult, Python,
@@ -14,7 +15,7 @@ use reqwest::{
 };
 use serde::Deserialize;
 use tokio::{sync::Semaphore, time::Instant};
-use tracing::{info, info_span, warn, Instrument};
+use tracing::{debug, info, info_span, Instrument};
 
 const DANGER_LIST: [&str; 6] = [
     "__",
@@ -41,14 +42,17 @@ struct SiblingsList {
     siblings: Vec<Sibling>,
 }
 
-struct UnsafeChatTemplate(bool);
+enum StaticCheckStatus {
+    Innocuous,
+    Suspicious,
+}
 
-fn static_check(chat_template: &str) -> UnsafeChatTemplate {
+fn static_check(chat_template: &str) -> StaticCheckStatus {
     if DANGER_LIST.iter().any(|expr| chat_template.contains(expr)) {
-        warn!("potentially malicious chat template:\n{chat_template}");
-        UnsafeChatTemplate(true)
+        info!("potentially malicious chat template:\n{chat_template}");
+        StaticCheckStatus::Suspicious
     } else {
-        UnsafeChatTemplate(false)
+        StaticCheckStatus::Innocuous
     }
 }
 
@@ -132,7 +136,7 @@ async fn fetch_file_header(
     let mut header = match GGUFHeader::read(&bytes).map_err(|e| anyhow!(e)) {
         Ok(header) => header,
         Err(err) => {
-            warn!("failed to parse header: {err}");
+            debug!("failed to parse header: {err}");
             return Ok(None);
         }
     };
@@ -150,7 +154,7 @@ async fn fetch_file_header(
             Ok(res) => res,
             Err(err) => {
                 if err.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) {
-                    warn!("failed to parse header after downloading full file");
+                    debug!("failed to parse header after downloading full file");
                     return Ok(None);
                 } else {
                     return Err(anyhow::Error::from(err));
@@ -161,12 +165,12 @@ async fn fetch_file_header(
         header = match GGUFHeader::read(&bytes).map_err(|e| anyhow!(e)) {
             Ok(header) => header,
             Err(err) => {
-                warn!("failed to parse header: {err}");
+                debug!("failed to parse header: {err}");
                 return Ok(None);
             }
         };
         if stop > WARNING_THRESHOLD {
-            warn!("downloaded over {WARNING_THRESHOLD} bytes for file, skipping");
+            debug!("downloaded over {WARNING_THRESHOLD} bytes for file, skipping");
             return Ok(None);
         }
         start += stop + 1;
@@ -176,40 +180,105 @@ async fn fetch_file_header(
     Ok(header)
 }
 
+struct Stats {
+    no_chat_template: bool,
+    parse_header_failure: bool,
+    security_error: bool,
+    static_check_status: StaticCheckStatus,
+}
+
+impl Stats {
+    fn no_chat_template() -> Self {
+        Self {
+            no_chat_template: true,
+            parse_header_failure: false,
+            security_error: false,
+            static_check_status: StaticCheckStatus::Innocuous,
+        }
+    }
+
+    fn parse_header_failure() -> Self {
+        Self {
+            no_chat_template: false,
+            parse_header_failure: true,
+            security_error: false,
+            static_check_status: StaticCheckStatus::Innocuous,
+        }
+    }
+
+    fn verify_result(security_error: bool, static_check_status: StaticCheckStatus) -> Self {
+        Self {
+            no_chat_template: false,
+            parse_header_failure: false,
+            security_error,
+            static_check_status,
+        }
+    }
+}
+
 async fn verify_file(
     client: reqwest::Client,
     file: Sibling,
     repo_id: String,
     semaphore: Arc<Semaphore>,
+    stats_collector_tx: tokio::sync::mpsc::Sender<Stats>,
 ) -> anyhow::Result<()> {
+    let full_instant = Instant::now();
     let permit = semaphore.acquire_owned().await?;
     let url = format!(
         "https://huggingface.co/{}/resolve/main/{}",
         repo_id, file.rfilename
     );
+    let fetch_header_inst = Instant::now();
     let header = match fetch_file_header(&client, url).await? {
         Some(header) => header,
         None => {
-            // parse_header_failures += 1;
+            info!(
+                "fetch_header took: {}s",
+                fetch_header_inst.elapsed().as_secs()
+            );
+            stats_collector_tx
+                .send(Stats::parse_header_failure())
+                .await?;
             return Ok(());
         }
     };
+    info!(
+        "fetch_header took: {}s",
+        fetch_header_inst.elapsed().as_secs()
+    );
     let value = match get_key_value("tokenizer.chat_template", &header.metadata) {
         Some((_, v)) => v,
         None => {
-            // no_chat_template += 1;
+            stats_collector_tx.send(Stats::no_chat_template()).await?;
             return Ok(());
         }
     };
     if let GGUFMetadataValue::String(value) = value {
-        static_check(&value);
-        if let SecurityError(true) = run_jinja_template(value).await? {
+        let static_check_inst = Instant::now();
+        let static_check_status = static_check(&value);
+        info!(
+            "static_check took: {}s",
+            static_check_inst.elapsed().as_secs()
+        );
+        let run_jinja_inst = Instant::now();
+        let security_error = run_jinja_template(value).await?.0;
+        info!(
+            "run_jinja_template took: {}s",
+            run_jinja_inst.elapsed().as_secs()
+        );
+        if security_error {
             info!("Security Error was caught when running chat template");
         }
+        stats_collector_tx
+            .send(Stats::verify_result(security_error, static_check_status))
+            .await?;
         drop(permit);
+        info!("verify_file took: {}s", full_instant.elapsed().as_secs());
         Ok(())
     } else {
         drop(permit);
+        info!("verify_file took: {}s", full_instant.elapsed().as_secs());
         Err(anyhow!(
             "invalid 'tokenizer.chat_template' value, got: {:?}",
             value
@@ -239,14 +308,16 @@ async fn main() -> anyhow::Result<()> {
 
     info!("repos_list len: {}", repos_list.len());
 
+    let (stats_collector_tx, mut stats_collector_rx) = tokio::sync::mpsc::channel(512);
     let mut total_gguf_files = 0;
-    // let mut no_chat_template = 0;
-    // let mut parse_header_failures = 0;
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CHECKS));
     let handles = FuturesUnordered::new();
-    for repo in repos_list {
+    'outer: for repo in repos_list {
         for file in repo.siblings {
             if file.rfilename.ends_with(".gguf") {
+                if total_gguf_files > 100 {
+                    break 'outer;
+                }
                 total_gguf_files += 1;
 
                 let span = info_span!(
@@ -258,11 +329,34 @@ async fn main() -> anyhow::Result<()> {
                 let client = client.clone();
                 let repo_id = repo.id.clone();
                 let semaphore = semaphore.clone();
+                let stats_collector_tx = stats_collector_tx.clone();
                 handles.push(tokio::spawn(
-                    verify_file(client, file, repo_id, semaphore).instrument(span),
+                    verify_file(client, file, repo_id, semaphore, stats_collector_tx)
+                        .instrument(span),
                 ));
             }
         }
+    }
+
+    let mut no_chat_template = 0;
+    let mut parse_header_failures = 0;
+    let mut sandbox_run_suspicious_files = 0;
+    let mut static_scan_suspicious_files = 0;
+    let bar = ProgressBar::new(total_gguf_files);
+    while let Some(stats) = stats_collector_rx.recv().await {
+        if stats.no_chat_template {
+            no_chat_template += 1;
+        }
+        if stats.parse_header_failure {
+            parse_header_failures += 1;
+        }
+        if stats.security_error {
+            sandbox_run_suspicious_files += 1;
+        }
+        if matches!(stats.static_check_status, StaticCheckStatus::Suspicious) {
+            static_scan_suspicious_files += 1;
+        }
+        bar.inc(1);
     }
 
     futures::future::join_all(handles)
@@ -271,10 +365,12 @@ async fn main() -> anyhow::Result<()> {
         .flatten()
         .collect::<anyhow::Result<()>>()?;
 
-    // info!("{no_chat_template} ouf of {total_gguf_files} gguf files were missing a chat_template");
-    // info!(
-    //     "failed to parse headers for {parse_header_failures} ouf of {total_gguf_files} gguf files"
-    // );
+    info!("{no_chat_template} ouf of {total_gguf_files} gguf files were missing a chat_template");
+    info!(
+        "failed to parse headers for {parse_header_failures} ouf of {total_gguf_files} gguf files"
+    );
+    info!("{sandbox_run_suspicious_files} ouf of {total_gguf_files} gguf files triggered a SecurityError in jinja2 sandbox environment");
+    info!("{static_scan_suspicious_files} ouf of {total_gguf_files} gguf files were flagged as suspicious by static scan");
 
     info!("total # of processed files: {total_gguf_files}");
     Ok(())
@@ -289,7 +385,7 @@ mod tests {
         let chat_template = r#"{% for x in ().__class__.__base__.__subclasses__() %}{% if "warning" in x.__name__ %}{{x()._module.__builtins__['__import__']('os').popen("touch /tmp/retr0reg")}}{%endif%}{% endfor %}"#;
         assert!(matches!(
             static_check(chat_template),
-            UnsafeChatTemplate(true)
+            StaticCheckStatus::Suspicious
         ));
     }
 
