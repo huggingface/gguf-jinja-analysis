@@ -28,7 +28,7 @@ const DANGER_LIST: [&str; 6] = [
 // Default to 10 Mib
 const HEADER_CHUNK_LENGTH: usize = 10_485_760;
 const MAX_CONCURRENT_CHECKS: usize = 128;
-const WARNING_THRESHOLD: usize = 1_073_741_824;
+const WARNING_THRESHOLD: usize = 104_857_600;
 
 #[derive(Deserialize)]
 struct Sibling {
@@ -223,30 +223,30 @@ async fn verify_file(
     semaphore: Arc<Semaphore>,
     stats_collector_tx: tokio::sync::mpsc::Sender<Stats>,
 ) -> anyhow::Result<()> {
-    let full_instant = Instant::now();
+    // let full_instant = Instant::now();
     let permit = semaphore.acquire_owned().await?;
     let url = format!(
         "https://huggingface.co/{}/resolve/main/{}",
         repo_id, file.rfilename
     );
-    let fetch_header_inst = Instant::now();
+    // let fetch_header_inst = Instant::now();
     let header = match fetch_file_header(&client, url).await? {
         Some(header) => header,
         None => {
-            info!(
-                "fetch_header took: {}s",
-                fetch_header_inst.elapsed().as_secs()
-            );
+            // info!(
+            //     "fetch_header took: {}s",
+            //     fetch_header_inst.elapsed().as_secs()
+            // );
             stats_collector_tx
                 .send(Stats::parse_header_failure())
                 .await?;
             return Ok(());
         }
     };
-    info!(
-        "fetch_header took: {}s",
-        fetch_header_inst.elapsed().as_secs()
-    );
+    // info!(
+    //     "fetch_header took: {}s",
+    //     fetch_header_inst.elapsed().as_secs()
+    // );
     let value = match get_key_value("tokenizer.chat_template", &header.metadata) {
         Some((_, v)) => v,
         None => {
@@ -255,18 +255,18 @@ async fn verify_file(
         }
     };
     if let GGUFMetadataValue::String(value) = value {
-        let static_check_inst = Instant::now();
+        // let static_check_inst = Instant::now();
         let static_check_status = static_check(&value);
-        info!(
-            "static_check took: {}s",
-            static_check_inst.elapsed().as_secs()
-        );
-        let run_jinja_inst = Instant::now();
+        // info!(
+        //     "static_check took: {}s",
+        //     static_check_inst.elapsed().as_secs()
+        // );
+        // let run_jinja_inst = Instant::now();
         let security_error = run_jinja_template(value).await?.0;
-        info!(
-            "run_jinja_template took: {}s",
-            run_jinja_inst.elapsed().as_secs()
-        );
+        // info!(
+        //     "run_jinja_template took: {}s",
+        //     run_jinja_inst.elapsed().as_secs()
+        // );
         if security_error {
             info!("Security Error was caught when running chat template");
         }
@@ -274,11 +274,11 @@ async fn verify_file(
             .send(Stats::verify_result(security_error, static_check_status))
             .await?;
         drop(permit);
-        info!("verify_file took: {}s", full_instant.elapsed().as_secs());
+        // info!("verify_file took: {}s", full_instant.elapsed().as_secs());
         Ok(())
     } else {
         drop(permit);
-        info!("verify_file took: {}s", full_instant.elapsed().as_secs());
+        // info!("verify_file took: {}s", full_instant.elapsed().as_secs());
         Err(anyhow!(
             "invalid 'tokenizer.chat_template' value, got: {:?}",
             value
@@ -312,12 +312,9 @@ async fn main() -> anyhow::Result<()> {
     let mut total_gguf_files = 0;
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CHECKS));
     let handles = FuturesUnordered::new();
-    'outer: for repo in repos_list {
+    for repo in repos_list {
         for file in repo.siblings {
             if file.rfilename.ends_with(".gguf") {
-                if total_gguf_files > 100 {
-                    break 'outer;
-                }
                 total_gguf_files += 1;
 
                 let span = info_span!(
@@ -338,6 +335,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    drop(stats_collector_tx);
     let mut no_chat_template = 0;
     let mut parse_header_failures = 0;
     let mut sandbox_run_suspicious_files = 0;
