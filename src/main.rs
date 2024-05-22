@@ -24,8 +24,8 @@ const DANGER_LIST: [&str; 6] = [
     "__base__",
     "__subclasses__",
 ];
-// Default to 1 Mib
-const HEADER_CHUNK_LENGTH: usize = 1_048_576;
+// Default to 10 Mib
+const HEADER_CHUNK_LENGTH: usize = 10_485_760;
 const MAX_CONCURRENT_CHECKS: usize = 128;
 const WARNING_THRESHOLD: usize = 1_073_741_824;
 
@@ -204,7 +204,7 @@ async fn verify_file(
     if let GGUFMetadataValue::String(value) = value {
         static_check(&value);
         if let SecurityError(true) = run_jinja_template(value).await? {
-            info!("Security Error was caught when running chat template")
+            info!("Security Error was caught when running chat template");
         }
         drop(permit);
         Ok(())
@@ -301,4 +301,21 @@ mod tests {
             Ok(SecurityError(true))
         ));
     }
+
+    // XXX: this test does not assert anything because [`verify_file`]'s return type is `()`
+    // #[tokio::test]
+    // async fn test_known_repo() -> anyhow::Result<()> {
+    //     let client = reqwest::Client::new();
+    //     let file = Sibling {
+    //         rfilename: "retr0reg.gguf".to_owned(),
+    //     };
+    //     let repo_id = String::from("Retr0REG/Whats-up-gguf");
+    //     let semaphore = Arc::new(Semaphore::new(1));
+    //     assert!(matches!(
+    //         verify_file(client, file, repo_id, semaphore).await?,
+    //         ()
+    //     ));
+    //
+    //     Ok(())
+    // }
 }
