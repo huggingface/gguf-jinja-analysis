@@ -286,6 +286,23 @@ async fn verify_file(
     }
 }
 
+fn print_report(
+    no_chat_template: usize,
+    parse_header_failures: usize,
+    sandbox_run_suspicious_files: usize,
+    static_scan_suspicious_files: usize,
+    total_gguf_files: u64,
+) {
+    info!("{no_chat_template} ouf of {total_gguf_files} gguf files were missing a chat_template");
+    info!(
+        "failed to parse headers for {parse_header_failures} ouf of {total_gguf_files} gguf files"
+    );
+    info!("{sandbox_run_suspicious_files} ouf of {total_gguf_files} gguf files triggered a SecurityError in jinja2 sandbox environment");
+    info!("{static_scan_suspicious_files} ouf of {total_gguf_files} gguf files were flagged as suspicious by static scan");
+
+    info!("total # of processed files: {total_gguf_files}");
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let builder = tracing_subscriber::fmt()
@@ -341,6 +358,7 @@ async fn main() -> anyhow::Result<()> {
     let mut sandbox_run_suspicious_files = 0;
     let mut static_scan_suspicious_files = 0;
     let bar = ProgressBar::new(total_gguf_files);
+    let mut done_scans = 0;
     while let Some(stats) = stats_collector_rx.recv().await {
         if stats.no_chat_template {
             no_chat_template += 1;
@@ -354,7 +372,17 @@ async fn main() -> anyhow::Result<()> {
         if matches!(stats.static_check_status, StaticCheckStatus::Suspicious) {
             static_scan_suspicious_files += 1;
         }
+        done_scans += 1;
         bar.inc(1);
+        if (done_scans / total_gguf_files * 100) % 10 == 0 {
+            print_report(
+                no_chat_template,
+                parse_header_failures,
+                sandbox_run_suspicious_files,
+                static_scan_suspicious_files,
+                total_gguf_files,
+            );
+        }
     }
 
     futures::future::join_all(handles)
@@ -363,14 +391,6 @@ async fn main() -> anyhow::Result<()> {
         .flatten()
         .collect::<anyhow::Result<()>>()?;
 
-    info!("{no_chat_template} ouf of {total_gguf_files} gguf files were missing a chat_template");
-    info!(
-        "failed to parse headers for {parse_header_failures} ouf of {total_gguf_files} gguf files"
-    );
-    info!("{sandbox_run_suspicious_files} ouf of {total_gguf_files} gguf files triggered a SecurityError in jinja2 sandbox environment");
-    info!("{static_scan_suspicious_files} ouf of {total_gguf_files} gguf files were flagged as suspicious by static scan");
-
-    info!("total # of processed files: {total_gguf_files}");
     Ok(())
 }
 
