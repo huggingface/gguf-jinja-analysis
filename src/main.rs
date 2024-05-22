@@ -374,7 +374,7 @@ async fn main() -> anyhow::Result<()> {
         }
         done_scans += 1;
         bar.inc(1);
-        if (done_scans / total_gguf_files * 100) % 10 == 0 {
+        if (done_scans as f64 / total_gguf_files as f64 * 100.0) % 10.0 == 0.0 {
             print_report(
                 no_chat_template,
                 parse_header_failures,
