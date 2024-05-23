@@ -291,16 +291,14 @@ fn print_report(
     parse_header_failures: usize,
     sandbox_run_suspicious_files: usize,
     static_scan_suspicious_files: usize,
-    total_gguf_files: u64,
+    current_total: u64,
 ) {
-    info!("{no_chat_template} ouf of {total_gguf_files} gguf files were missing a chat_template");
-    info!(
-        "failed to parse headers for {parse_header_failures} ouf of {total_gguf_files} gguf files"
-    );
-    info!("{sandbox_run_suspicious_files} ouf of {total_gguf_files} gguf files triggered a SecurityError in jinja2 sandbox environment");
-    info!("{static_scan_suspicious_files} ouf of {total_gguf_files} gguf files were flagged as suspicious by static scan");
+    info!("{no_chat_template} out of {current_total} gguf files were missing a chat_template");
+    info!("failed to parse headers for {parse_header_failures} out of {current_total} gguf files");
+    info!("{sandbox_run_suspicious_files} out of {current_total} gguf files triggered a SecurityError in jinja2 sandbox environment");
+    info!("{static_scan_suspicious_files} out of {current_total} gguf files were flagged as suspicious by static scan");
 
-    info!("total # of processed files: {total_gguf_files}");
+    info!("total # of processed files: {current_total}");
 }
 
 #[tokio::main]
@@ -359,6 +357,8 @@ async fn main() -> anyhow::Result<()> {
     let mut static_scan_suspicious_files = 0;
     let bar = ProgressBar::new(total_gguf_files);
     let mut done_scans = 0;
+    let ten_percent = total_gguf_files / 10;
+    let mut display_stats_thresh = ten_percent;
     while let Some(stats) = stats_collector_rx.recv().await {
         if stats.no_chat_template {
             no_chat_template += 1;
@@ -374,7 +374,7 @@ async fn main() -> anyhow::Result<()> {
         }
         done_scans += 1;
         bar.inc(1);
-        if (done_scans as f64 / total_gguf_files as f64 * 100.0) % 10.0 == 0.0 {
+        if done_scans >= display_stats_thresh {
             print_report(
                 no_chat_template,
                 parse_header_failures,
@@ -382,6 +382,7 @@ async fn main() -> anyhow::Result<()> {
                 static_scan_suspicious_files,
                 total_gguf_files,
             );
+            display_stats_thresh += ten_percent;
         }
     }
 
