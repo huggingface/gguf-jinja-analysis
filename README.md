@@ -2,7 +2,7 @@
 
 ## Overview
 
-This analysis examines the vulnerability in GGUF models related to the recently disclosed CVE affecting jinja2's template rendering mechanism in llama-cpp-python. The goal is to identify any dangerous implementations of this template in publicly available GGUF models.
+This analysis examines the vulnerability in GGUF models related to the [recently disclosed CVE](https://github.com/abetlen/llama-cpp-python/security/advisories/GHSA-56xg-wfcc-g829) affecting jinja2's template rendering mechanism in llama-cpp-python. The goal is to identify any dangerous implementations of this template in publicly available GGUF models.
 
 ## Background
 
@@ -19,7 +19,7 @@ Two evaluation methods were employed:
 
 ## Results
 
-Out of over 116,000 GGUF models analyzed, only one dangerous model was identified: @retr0reg's exploit. Approximately 70 models were flagged as suspicious during the static analysis, but further inspection revealed no additional threats. It is worth noting that about 40% of the models (approximately 46,000) included a chat template, highlighting the potential impact of this vulnerability.
+Out of over 116,000 GGUF models analyzed, only one dangerous model was identified: [@retr0reg](https://x.com/retr0reg)'s exploit. Approximately 70 models were flagged as suspicious during the static analysis, but further inspection revealed no additional threats. It is worth noting that about 40% of the models (approximately 46,000) included a chat template, highlighting the potential impact of this vulnerability.
 
 ## Recommendations
 
