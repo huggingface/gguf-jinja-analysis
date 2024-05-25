@@ -6,11 +6,11 @@ This analysis examines the vulnerability in GGUF models related to the [recently
 
 ### Background
 
-Each GGUF model can include a chat template, which utilizes jinja2 templating to format the prompt. This template resides in the file's header metadata. A potential security risk arises when this template is improperly sanitized, leading to possible code injection or other malicious behavior.
+Each GGUF model can include a chat template, which utilizes jinja2 templating to format the prompt. This template resides in the file's header metadata. A potential security risk arises when this template is not run in a sandbox, leading to possible arbitrary code execution.
 
 ### Analysis Methodology
 
-The analysis was conducted using a *blazingly fast* Rust script that efficiently retrieves and processes a large number of GGUF files. Specifically, the script emits an HTTP request with a RANGE header to fetch only the relevant bytes of the GGUF file, containing the header & the chat template.
+The analysis was conducted using a *blazingly fast* Rust script that retrieves and processes a large number of GGUF files. Specifically, the script emits an HTTP request with a RANGE header to fetch only the relevant bytes of the GGUF file, containing the header & the chat template.
 
 Two evaluation methods were employed:
 
